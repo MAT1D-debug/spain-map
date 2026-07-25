@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>스페인 방문 지도</title>
+<style>
+:root{
+  --bg:#faf9f6;--card:#fff;--text:#202124;--muted:#6f6f6f;--line:#444;
+  --empty:#eef2f0;--visited:#8fc6a4;--hover:#cfe8d8;--panel:#f7f5f0
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);font-family:system-ui,-apple-system,"Segoe UI",sans-serif;color:var(--text)}
+.wrap{max-width:1200px;margin:auto;padding:14px}
+.card{background:#fff;border:1px solid #e5e2dc;border-radius:18px;overflow:hidden}
+header{display:flex;justify-content:space-between;align-items:center;gap:14px;padding:18px 22px;border-bottom:1px solid #ece9e3;flex-wrap:wrap}
+h1{font-size:24px;margin:0}.sub{font-size:13px;color:var(--muted);margin-top:5px;max-width:720px}
+.actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.count{font-weight:800;background:#f3f1ec;border-radius:999px;padding:10px 14px}
+button{border:0;border-radius:11px;padding:10px 14px;font-weight:750;cursor:pointer;background:#ebe8e2}
+button:hover{filter:brightness(.97)}
+#status{padding:10px 22px;font-size:13px;color:var(--muted);border-bottom:1px solid #ece9e3}
+.tools{display:flex;gap:10px;padding:12px 22px;border-bottom:1px solid #ece9e3;background:var(--panel);flex-wrap:wrap}
+input{flex:1;min-width:220px;border:1px solid #ddd7cc;border-radius:10px;padding:10px 12px;font-size:14px;background:#fff}
+.map-wrap{position:relative}
+#map{display:block;width:100%;height:auto;background:#f3f7f7}
+.region{fill:var(--empty);stroke:var(--line);stroke-width:.75;vector-effect:non-scaling-stroke;cursor:pointer;transition:fill .15s}
+.region:hover,.region.focused{fill:var(--hover)}
+.region.visited{fill:var(--visited)}
+.label{font-size:8.5px;font-weight:700;text-anchor:middle;pointer-events:none;paint-order:stroke;stroke:#fff;stroke-width:2.8px;stroke-linejoin:round}
+.inset-title{font-size:11px;font-weight:800;fill:#555;letter-spacing:.03em}
+.inset-box{fill:none;stroke:#a9a9a9;stroke-width:1;stroke-dasharray:4 4}
+.legend{display:flex;gap:18px;flex-wrap:wrap;padding:12px 22px;border-top:1px solid #ece9e3;font-size:13px}
+.sw{width:13px;height:13px;border:1px solid #555;display:inline-block;vertical-align:-2px;margin-right:6px}
+.tip{display:none;position:fixed;z-index:9;background:#222;color:#fff;padding:7px 9px;border-radius:7px;font-size:12px;pointer-events:none}
+@media(max-width:700px){
+  .wrap{padding:0}.card{border-radius:0}.label{font-size:6px}h1{font-size:20px}
+  .sub{max-width:100%}
+}
+</style>
+</head>
+<body>
+<div class="wrap"><div class="card">
+<header>
+  <div>
+    <h1>🇪🇸 스페인 방문 지도</h1>
+    <div class="sub">본토는 provincia 단위로, Balears와 Canarias는 섬 단위로 표시합니다. Mallorca 안의 Palma·Andratx 등은 따로 나누지 않습니다.</div>
+  </div>
+  <div class="actions">
+    <div class="count"><span id="count">0</span> / <span id="total">60</span> 방문</div>
+    <button id="reset">로컬 초기화</button>
+  </div>
+</header>
+<div id="status">스페인 경계 데이터를 불러오는 중…</div>
+<div class="tools">
+  <input id="search" type="search" placeholder="Madrid, Granada, Mallorca, León…">
+  <button id="clearSearch">검색 해제</button>
+</div>
+<div class="map-wrap">
+  <svg id="map" viewBox="0 0 1100 700" aria-label="스페인 방문 지도"></svg>
+</div>
+<div class="legend">
+  <span><i class="sw" style="background:var(--empty)"></i>미방문</span>
+  <span><i class="sw" style="background:var(--visited)"></i>방문</span>
+  <span>현재 버전은 브라우저에만 저장됩니다. 노션 동기화는 다음 단계에서 연결합니다.</span>
+</div>
+</div></div>
+<div class="tip" id="tip"></div>
+
+<script>
+const DATA_URLS=[
+  "https://mapas.fomento.gob.es/arcgis/rest/services/SIU/ENTIDADES_TERRITORIALES_EGRN/MapServer/2/query?where=1%3D1&outFields=NAMEUNIT&returnGeometry=true&outSR=4326&f=geojson",
+  "https://media.githubusercontent.com/media/wmgeolab/geoBoundaries/9469f09/releaseData/gbOpen/ESP/ADM2/geoBoundaries-ESP-ADM2_simplified.geojson",
+  "https://raw.githubusercontent.com/wmgeolab/geoBoundaries/9469f09/releaseData/gbOpen/ESP/ADM2/geoBoundaries-ESP-ADM2_simplified.geojson"
+];
+
+const svg=document.getElementById("map");
+const statusEl=document.getElementById("status");
+const countEl=document.getElementById("count");
+const totalEl=document.getElementById("total");
+const tip=document.getElementById("tip");
+const searchEl=document.getElementById("search");
+
+let localVisited=new Set(JSON.parse(localStorage.getItem("espanaVisited")||"[]"));
+let regionPaths=new Map();
+
+const ALIAS={
+  "A Coruña":"A Coruña","La Coruña":"A Coruña","Coruña, A":"A Coruña",
+  "Araba/Álava":"Álava","Alava":"Álava","Álava":"Álava",
+  "Castellón/Castelló":"Castellón","Castelló":"Castellón",
+  "València/Valencia":"Valencia","València":"Valencia",
+  "Alacant/Alicante":"Alicante","Alacant":"Alicante",
+  "Gipuzkoa":"Guipúzcoa","Bizkaia":"Vizcaya",
+  "Illes Balears":"Balears","Islas Baleares":"Balears","Baleares":"Balears",
+  "Las Palmas":"Las Palmas","Santa Cruz de Tenerife":"Santa Cruz de Tenerife",
+  "Ceuta":"Ceuta","Melilla":"Melilla"
+};
+
+const ISLAND_CENTERS={
+  "Mallorca":[2.90,39.65],"Menorca":[4.10,39.95],"Ibiza":[1.40,38.98],"Formentera":[1.45,38.70],
+  "El Hierro":[-17.95,27.74],"La Palma":[-17.85,28.65],"La Gomera":[-17.25,28.10],
+  "Tenerife":[-16.55,28.30],"Gran Canaria":[-15.60,27.95],
+  "Fuerteventura":[-14.00,28.35],"Lanzarote":[-13.65,29.05]
+};
+const BALEARIC_NAMES=["Mallorca","Menorca","Ibiza","Formentera"];
+const CANARY_NAMES=["El Hierro","La Palma","La Gomera","Tenerife","Gran Canaria","Fuerteventura","Lanzarote"];
+
+const norm=s=>ALIAS[(s||"").trim()]||(s||"").trim();
+const key=s=>norm(s).normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase().replace(/[^a-z0-9]/g,"");
+
+function ringArea(ring){
+  let a=0;
+  for(let i=0,j=ring.length-1;i<ring.length;j=i++) a+=ring[j][0]*ring[i][1]-ring[i][0]*ring[j][1];
+  return Math.abs(a/2);
+}
+function polygonArea(poly){return ringArea(poly[0]||[])}
+function polygonCentroidCoords(poly){
+  const ring=poly[0]||[];
+  if(!ring.length)return [0,0];
+  let twiceArea=0,cx=0,cy=0;
+  for(let i=0,j=ring.length-1;i<ring.length;j=i++){
+    const cross=ring[j][0]*ring[i][1]-ring[i][0]*ring[j][1];
+    twiceArea+=cross;cx+=(ring[j][0]+ring[i][0])*cross;cy+=(ring[j][1]+ring[i][1])*cross;
+  }
+  if(Math.abs(twiceArea)<1e-12)return [ring.reduce((s,p)=>s+p[0],0)/ring.length,ring.reduce((s,p)=>s+p[1],0)/ring.length];
+  return [cx/(3*twiceArea),cy/(3*twiceArea)];
+}
+function geometryPolygons(g){
+  if(g.type==="Polygon")return [g.coordinates];
+  return g.coordinates||[];
+}
+function geometryFromPolygons(polys){
+  return polys.length===1?{type:"Polygon",coordinates:polys[0]}:{type:"MultiPolygon",coordinates:polys};
+}
+function largestPolygonGeometry(g){
+  const polys=geometryPolygons(g);
+  if(!polys.length)return g;
+  let best=polys[0],bestArea=polygonArea(best);
+  for(const p of polys){const a=polygonArea(p);if(a>bestArea){best=p;bestArea=a}}
+  return {type:"Polygon",coordinates:best};
+}
+function polygonCentroid(g){
+  return polygonCentroidCoords(largestPolygonGeometry(g).coordinates);
+}
+function pathData(g,project){
+  const poly=r=>r.map((p,i)=>(i?"L":"M")+project(p).join(",")).join("")+"Z";
+  if(g.type==="Polygon")return g.coordinates.map(poly).join("");
+  return g.coordinates.flatMap(p=>p.map(poly)).join("");
+}
+function nearestIsland(c,names){
+  let best=names[0],dist=Infinity;
+  for(const name of names){
+    const p=ISLAND_CENTERS[name],d=(c[0]-p[0])**2+(c[1]-p[1])**2;
+    if(d<dist){best=name;dist=d}
+  }
+  return best;
+}
+function splitProvince(feature,names){
+  const groups=Object.fromEntries(names.map(n=>[n,[]]));
+  for(const poly of geometryPolygons(feature.geometry)){
+    groups[nearestIsland(polygonCentroidCoords(poly),names)].push(poly);
+  }
+  return names.filter(n=>groups[n].length).map(name=>({
+    type:"Feature",
+    properties:{displayName:name,mapGroup:names===BALEARIC_NAMES?"balearic":"canary"},
+    geometry:geometryFromPolygons(groups[name])
+  }));
+}
+function updateDisplay(){
+  countEl.textContent=localVisited.size;
+  for(const [name,path] of regionPaths)path.classList.toggle("visited",localVisited.has(name));
+}
+function saveLocal(){
+  localStorage.setItem("espanaVisited",JSON.stringify([...localVisited]));
+  updateDisplay();
+}
+function projectToBox(bounds,box){
+  const [minX,minY,maxX,maxY]=bounds,[x0,y0,x1,y1]=box;
+  const sx=(x1-x0)/(maxX-minX),sy=(y1-y0)/(maxY-minY),scale=Math.min(sx,sy);
+  const usedW=(maxX-minX)*scale,usedH=(maxY-minY)*scale;
+  const ox=x0+(x1-x0-usedW)/2,oy=y0+(y1-y0-usedH)/2;
+  return ([x,y])=>[ox+(x-minX)*scale,oy+(maxY-y)*scale];
+}
+const projectMain=projectToBox([-9.6,35.5,4.5,44.2],[28,28,815,650]);
+const projectBalearic=projectToBox([1.05,38.55,4.45,40.15],[835,235,1072,425]);
+const projectCanary=projectToBox([-18.25,27.45,-13.25,29.35],[45,525,445,680]);
+
+function addInsetBox(x,y,w,h,title){
+  const ns="http://www.w3.org/2000/svg";
+  const r=document.createElementNS(ns,"rect");
+  r.setAttribute("x",x);r.setAttribute("y",y);r.setAttribute("width",w);r.setAttribute("height",h);r.setAttribute("rx",10);r.setAttribute("class","inset-box");
+  svg.appendChild(r);
+  const t=document.createElementNS(ns,"text");
+  t.setAttribute("x",x+10);t.setAttribute("y",y+18);t.setAttribute("class","inset-title");t.textContent=title;
+  svg.appendChild(t);
+}
+function render(features){
+  const ns="http://www.w3.org/2000/svg";
+  svg.innerHTML="";
+  regionPaths.clear();
+  addInsetBox(825,215,262,225,"ILLES BALEARS");
+  addInsetBox(28,500,435,185,"CANARIAS");
+
+  for(const f of features){
+    const n=f.properties.displayName;
+    const group=f.properties.mapGroup||"main";
+    const project=group==="balearic"?projectBalearic:group==="canary"?projectCanary:projectMain;
+
+    const p=document.createElementNS(ns,"path");
+    p.setAttribute("d",pathData(f.geometry,project));
+    p.setAttribute("class","region");
+    p.dataset.name=n;
+    regionPaths.set(n,p);
+    p.onclick=()=>{
+      localVisited.has(n)?localVisited.delete(n):localVisited.add(n);
+      saveLocal();
+      statusEl.textContent=`${n} ${localVisited.has(n)?"방문 표시":"방문 표시 해제"}`;
+    };
+    p.onmousemove=e=>{
+      tip.style.display="block";tip.style.left=e.clientX+12+"px";tip.style.top=e.clientY+12+"px";tip.textContent=n;
+    };
+    p.onmouseleave=()=>tip.style.display="none";
+    svg.appendChild(p);
+
+    const c=project(polygonCentroid(f.geometry));
+    const t=document.createElementNS(ns,"text");
+    t.setAttribute("x",c[0]);t.setAttribute("y",c[1]);t.setAttribute("class","label");t.setAttribute("dominant-baseline","middle");
+    t.textContent=n;
+    svg.appendChild(t);
+  }
+  totalEl.textContent=features.length;
+  updateDisplay();
+}
+function rawName(f){
+  const p=f.properties||{};
+  return norm(p.shapeName||p.NAMEUNIT||p.name||p.NAME_2||p.prov_name||"");
+}
+function isName(n,candidates){return candidates.some(x=>key(n)===key(x))}
+async function main(){
+  try{
+    let geo=null,lastErr=null;
+    for(const url of DATA_URLS){
+      try{
+        const ctrl=new AbortController(),timer=setTimeout(()=>ctrl.abort(),60000);
+        const r=await fetch(url,{signal:ctrl.signal});clearTimeout(timer);
+        if(!r.ok)throw Error("HTTP "+r.status);
+        const text=await r.text();
+        if(text.trim().startsWith("version https://git-lfs.github.com/spec"))throw Error("Git LFS pointer");
+        geo=JSON.parse(text);break;
+      }catch(err){lastErr=err}
+    }
+    if(!geo)throw lastErr||Error("지도 데이터를 가져오지 못했습니다");
+
+    const out=[];
+    let balears=null,lasPalmas=null,santaCruz=null;
+
+    for(const f of geo.features||[]){
+      const n=rawName(f);
+      if(isName(n,["Balears","Illes Balears","Islas Baleares","Baleares"])){balears=f;continue}
+      if(isName(n,["Las Palmas"])){lasPalmas=f;continue}
+      if(isName(n,["Santa Cruz de Tenerife"])){santaCruz=f;continue}
+      out.push({...f,properties:{...(f.properties||{}),displayName:n,mapGroup:"main"}});
+    }
+    if(!balears||!lasPalmas||!santaCruz)throw Error("Balears 또는 Canarias 경계를 찾지 못했습니다.");
+
+    out.push(...splitProvince(balears,BALEARIC_NAMES));
+    out.push(...splitProvince(lasPalmas,CANARY_NAMES));
+    out.push(...splitProvince(santaCruz,CANARY_NAMES));
+
+    // 두 Canary provincia에 흩어진 작은 섬 조각을 같은 섬 이름으로 합칩니다.
+    const merged=[];
+    const byName=new Map();
+    for(const f of out){
+      const n=f.properties.displayName;
+      if(!CANARY_NAMES.includes(n)){merged.push(f);continue}
+      const polys=geometryPolygons(f.geometry);
+      if(!byName.has(n))byName.set(n,[]);
+      byName.get(n).push(...polys);
+    }
+    for(const [name,polys] of byName)merged.push({
+      type:"Feature",properties:{displayName:name,mapGroup:"canary"},geometry:geometryFromPolygons(polys)
+    });
+
+    merged.sort((a,b)=>a.properties.displayName.localeCompare(b.properties.displayName,"es"));
+    render(merged);
+    statusEl.textContent=`지도 준비 완료 · 총 ${merged.length}개 지역`;
+  }catch(e){
+    console.error(e);
+    statusEl.textContent="⚠️ 지도 로딩 실패: "+e.message+" · GitHub Pages에 올린 뒤 다시 확인해 주세요.";
+  }
+}
+
+document.getElementById("reset").onclick=()=>{
+  if(confirm("이 브라우저에 저장된 스페인 방문 표시를 모두 초기화할까요?")){
+    localVisited.clear();saveLocal();statusEl.textContent="로컬 방문 표시를 초기화했습니다.";
+  }
+};
+document.getElementById("clearSearch").onclick=()=>{
+  searchEl.value="";
+  for(const p of regionPaths.values())p.classList.remove("focused");
+};
+searchEl.addEventListener("input",()=>{
+  const q=key(searchEl.value);
+  for(const [name,p] of regionPaths)p.classList.toggle("focused",!!q&&key(name).includes(q));
+});
+searchEl.addEventListener("keydown",e=>{
+  if(e.key==="Enter"){
+    const q=key(searchEl.value);
+    const hit=[...regionPaths].find(([name])=>key(name).includes(q));
+    if(hit){hit[1].dispatchEvent(new MouseEvent("click"));statusEl.textContent=`검색 결과: ${hit[0]}`}
+  }
+});
+main();
+</script>
+</body>
+</html>
